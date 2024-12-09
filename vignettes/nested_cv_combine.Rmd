@@ -1,0 +1,505 @@
+---
+title: "XGboost for the feature importance for each potentially causally linked metabolic measure"
+author: "Joonatan Palmu"
+date: "`r format(Sys.time(), '%d.%m.%Y')`"
+output:
+  rmdformats::html_clean:
+    self_contained: true
+    thumbnails: false
+    lightbox: true
+    gallery: true
+---
+
+# Init
+
+```{css, echo = FALSE}
+.main-container {
+  max-width:1920px !important;
+}
+```
+
+```{r options, include = FALSE}
+knitr::opts_chunk$set(include = TRUE, echo = TRUE, message = FALSE, results='asis', cache=FALSE, warning=FALSE, collapse = TRUE, error = TRUE)
+```
+
+
+# Library
+
+```{r}
+library(magrittr)
+```
+
+# Devtools
+
+```{r devtools}
+devtools::load_all(quiet = TRUE)
+```
+
+## Command line arguments
+
+```{r}
+args <- list(optparse::make_option("--results", default = "nested_xgboost_cox_cv_.*-20240325_113000.rds")) %>% 
+  optparse::OptionParser(option_list = .) %>% 
+  optparse::parse_args()
+```
+
+```{r}
+args %>% tibble::enframe(name = "Option", value = "Argument") %>% knitr::kable()
+```
+
+## Function factories
+
+```{r}
+mysave <- mysavefactory()
+```
+
+## Plot settings
+
+```{r}
+{ ggthemes::theme_tufte(base_family = "sans", base_size = 12) +
+    ggplot2::theme(panel.border = ggplot2::element_rect(colour = "black", fill = NA),
+                   panel.background = ggplot2::element_rect(fill = NA, color = NA),
+                   plot.background = ggplot2::element_rect(fill = NA, color = NA), 
+                   axis.text = ggplot2::element_text(colour = "black", size = 10)) } %>%
+  ggplot2::theme_set()
+```
+
+# Load previously run nested XGboost models
+
+```{r}
+result_files <- list.files(path = "rds", pattern = args$results, full.names = TRUE)
+```
+
+```{r}
+result_files %>%
+  tibble::as_tibble() %>% 
+  DT::datatable()
+```
+
+```{r Read result files}
+results <- result_files %>% 
+  purrr::map(nested_xgboost_cox_cv_load, .progress = TRUE) %>%
+  rlang::set_names(., glue::glue("model_{seq_along(.)}"))
+```
+
+# First plot panel
+
+## Harrell's statistic
+
+```{r calculate harrells statistic}
+df_harrell <- results %>%
+  purrr::map_df(~purrr::map_df(.x, nested_xgboost_cox_cv_harrell, .id = "inner"), .id = "outer") %>%
+  dplyr::summarize(index = mean(index), .by = outer)
+```
+
+```{r}
+df_harrell %>% dplyr::summarize(mean = mean(index), sd = sd(index)) %>% knitr::kable()
+```
+
+
+```{r}
+df_harrell %>% DT::datatable()
+```
+
+```{r}
+{ panel_harrell <- { df_harrell %>%
+                 ggplot2::ggplot(ggplot2::aes(x = index, fill = outer, color = outer)) +
+                 ggplot2::geom_histogram(binwidth = 0.005, boundary = 0.005) +
+                 ggplot2::scale_fill_grey(start = 0, end = 0.9) +
+                 ggplot2::scale_color_grey(start = 0, end = 0.9) +
+                 ggplot2::scale_y_continuous(name = NULL, expand = c(0, 0)) +
+                 ggplot2::scale_x_continuous(name = "Predictive power of nested survival models using Harrell's C score",
+                                             expand = c(0, 0),
+                                             limits = ~ c(round(20*min(abs(.x)), 0)/20, 1),
+                                             labels = scales::percent) +
+                 ggplot2::ggtitle('C') +
+                 ggplot2::theme(legend.position = "none",
+                                panel.grid.major = ggplot2::element_blank(),
+                                panel.grid.minor = ggplot2::element_blank(),
+                                plot.margin = ggplot2::margin(1, 5, 1, 1, "mm")) } %>% 
+    grob_resize_panels(., heights =  20, width = 150) } %>%
+  mysave(name = "xgboost_harrell", width = 10, height = 3)
+```
+
+## Feature gain
+
+```{r calculate model gain}
+df_gain <- results %>%
+  purrr::list_flatten(name_spec = "{outer}_{inner}") %>%
+  purrr::map_df(~xgboost::xgb.importance(colnames(.x$matrix), .x$model), .id = "model")
+```
+
+```{r}
+df_gain %>%
+  dplyr::summarize(Gain = sum(Gain), .by = Feature) %>%
+  my_add_names(by = "Feature") %>%
+  dplyr::mutate(Desc = ifelse(Feature == "PREVAL_MACE_PAD", "Peripheral artery disease", Desc)) %>% 
+  dplyr::arrange(desc(Gain)) %>%
+  DT::datatable(caption = "Feature gain")
+```
+
+### Features better than randomness
+
+```{r number of better than random features}
+n_features <- df_gain %>%
+  dplyr::summarize(Gain = sum(Gain), .by = Feature) %>% 
+  dplyr::arrange(desc(Gain)) %>%
+  dplyr::mutate(position = dplyr::row_number() - 1) %>% 
+  dplyr::filter(stringr::str_detect(Feature, "rnorm_")) %>%
+  dplyr::pull(position) %>%
+  min()
+```
+
+Observed number of `r n_features` better than random features.
+
+### XGBoost importance
+
+```{r}
+df_gain_scaled <- df_gain %>%
+  dplyr::mutate(model = stringr::str_replace(model, "_[0-9]*$", "")) %>% 
+  dplyr::mutate(Gain_scaled = Gain/length(results))
+```
+
+```{r}
+df_importance_sum <- df_gain_scaled %>%
+  dplyr::summarize(sum = sum(Gain_scaled), .by = Feature) %>%
+  dplyr::arrange(desc(sum)) %>%
+  dplyr::filter(dplyr::row_number() <= n_features) %>% 
+  my_add_names(by = "Feature") %>%
+  dplyr::mutate(Desc = ifelse(is.na(Desc) | nchar(Desc) == 0, Feature, Desc)) %>%
+  dplyr::mutate(Feature = forcats::fct_rev(factor(dplyr::row_number(), labels = Feature))) %>% 
+  dplyr::mutate(Desc = forcats::fct_rev(factor(dplyr::row_number(), labels = Desc)))
+```
+
+```{r}
+df_importance <- df_gain_scaled %>%
+  dplyr::inner_join(df_importance_sum, by = dplyr::join_by(Feature)) %>%
+  dplyr:::arrange(sum) %>% 
+  dplyr::mutate(Desc = ifelse(stringr::str_detect(Feature, "GUT_|Phylum_|Class_|Order_|Family_|Genus_|Species_"), glue::glue("*{Desc}*"), as.character(Desc))) %>%
+  dplyr::mutate(Desc = ifelse(Desc == "Free cholesterol to total lipids ratio in very large VLDL",
+                              "Free cholesterol ratio in very large VLDL",
+                              Desc)) %>% 
+  dplyr::mutate(Desc = factor(dplyr::row_number(), labels = Desc)) %>%
+  dplyr::mutate(panel = dplyr::case_when(stringr::str_detect(Feature, "Phylum_|Class_|Order_|Family_|Genus_|Species_") ~ "Taxa",
+                                         stringr::str_detect(Feature, "NMR_") ~ "Metab",
+                                         TRUE ~ "Other") %>% factor(levels = c("Other", "Taxa", "Metab")))  
+```
+
+```{r}
+c_importance_order <- df_importance_sum %>% dplyr::pull(Feature) %>% as.character()
+```
+
+```{r, include = FALSE}
+df_gain_scaled %>%
+  dplyr::summarize(sum = sum(Gain_scaled), .by = Feature) %>%
+  dplyr::arrange(desc(sum)) %>%
+  readr::write_tsv("xgboost_importance.tsv")
+```
+
+### Importance plot
+
+```{r}
+df_subset <- df_importance %>%
+  dplyr::filter(sum > 0.03 | stringr::str_detect(Feature, "NMR_|GUT_|Phylum_|Class_|Order_|Family_|Genus_|Species_|shannon")) %>%
+  dplyr::select(Feature) %>%
+  unique
+```
+
+```{r}
+panel_heights <- get_distinct_values_by_group(df = df_importance %>% dplyr::inner_join(df_subset, by = dplyr::join_by(Feature)),
+                                              col = Desc,
+                                              group_by = panel,
+                                              multiplier = 4,
+                                              list = TRUE)
+```
+
+```{r}
+{ panel_gain <- { df_importance %>%
+                    dplyr::inner_join(df_subset, by = dplyr::join_by(Feature)) %>%
+                    ggplot2::ggplot(ggplot2::aes(x = Desc, y = Gain_scaled, fill = model, color = model)) +
+                 ggplot2::facet_wrap(~panel, ncol = 1, scales = "free") +
+                 ggplot2::geom_bar(stat = "identity") +
+                 ggplot2::coord_flip() +
+                 ggplot2::scale_color_grey(start = 0, end = 0.9) +  
+                 ggplot2::scale_fill_grey(start = 0, end = 0.9) +
+                 ggplot2::scale_x_discrete(name = NULL, expand = c(0, 0)) +
+                 ggplot2::ggtitle('A') +
+                 ggplot2::scale_y_continuous(name = "Covariate's\ngain",
+                                             expand = c(0, 0),
+                                             limits = ~ ifelse(max(.x) > 0.03, 0.4, 0.03) %>% c(0, .),
+                                             breaks = ~ ifelse(max(.x) > 0.03, 0.2, 0.01) %>% seq(0, 1, .),
+                                             labels = scales::percent) +
+                 ggplot2::theme(strip.background = ggplot2::element_blank() ,
+                                strip.text.x = ggplot2::element_blank(),
+                                panel.spacing = ggplot2::unit(2, "mm"),
+                                plot.margin = ggplot2::margin(0, 0, 0, 0, "mm"),
+                                legend.position = "none",
+                                axis.text.y = ggtext::element_markdown(),
+                                panel.grid.major = ggplot2::element_blank(),
+                                panel.grid.minor = ggplot2::element_blank()) } %>%
+    grob_resize_panels(., heights = panel_heights, width = 30) } %>%
+  mysave(name = "xgboost_importance", width = 6, height = 10)
+```
+
+## Shapley values
+
+```{r}
+calculate_shaps <- function(x, vars) {
+  object <- shapviz::shapviz(x$model, X = x$data, X_pred = x$matrix)
+  S <- shapviz::get_shap_values(object) %>%
+    tibble::as_tibble() %>%
+    tibble::add_column(ids = x$ids)
+  X <- shapviz::get_feature_values(object) %>%
+    tibble::as_tibble() %>%
+    tibble::add_column(ids = x$ids)
+  list(X = X, S = S)
+}
+```
+
+```{r calculate shapley values}
+shap_interactions <- results %>%
+  purrr::list_flatten(name_spec = "{outer}_{inner}") %>%
+  purrr::map(calculate_shaps)
+```
+
+## SHAP beeswarm
+
+
+```{r}
+S_subset <- shap_interactions %>%
+  purrr::map_df(~.x$S[, c_importance_order %union% "ids"], .id = "model") %>% 
+  dplyr::summarize(dplyr::across(dplyr::one_of(c_importance_order), median), .by = ids) %>%
+  tibble::column_to_rownames("ids") %>% 
+  as.matrix()
+```
+
+```{r}
+X_subset <- shap_interactions %>%
+  purrr::map_df(~.x$X[, c_importance_order %union% "ids"], .id = "model") %>% 
+  dplyr::summarize(dplyr::across(dplyr::one_of(c_importance_order), median), .by = ids) %>% 
+  dplyr::mutate(dplyr::across(dplyr::one_of(c_importance_order), shapviz:::.min_max_scale)) %>%
+  tibble::column_to_rownames("ids") %>% 
+  as.matrix()
+```
+
+```{r, include = FALSE}
+df_shap <- readRDS("rds/df_shap-20241105_124917.rds")
+```
+
+```{r}
+df_shap <- as.data.frame.table(S_subset, responseName = "value") %>%
+  dplyr::mutate(Feature = forcats::fct_rev(factor(Var2, levels = c_importance_order))) %>% 
+  dplyr::mutate(color = as.data.frame.table(X_subset)$Freq) %>%
+  tidyr::drop_na()
+mysave(df_shap)
+```
+
+
+```{r}
+my_x_breaks <- function(x, limits = FALSE) {
+  diff <- max(x) - min(x)
+  step <- dplyr::case_when(diff < 1 ~ 0.1,
+                           TRUE ~ 1.0)
+  seq(-10, 10, step)
+}
+
+```
+
+
+```{r}
+panel_b <- { df_shap %>%
+               dplyr::inner_join(df_subset, by = dplyr::join_by(Feature)) %>%
+               dplyr::left_join(df_importance %>% dplyr::select(Feature, Desc, panel, sum) %>% dplyr::distinct(),
+                                by = dplyr::join_by(Feature)) %>% 
+               ggplot2::ggplot(ggplot2::aes(x = value, y = Desc)) +
+               ggplot2::facet_wrap(~panel, ncol = 1, scales = "free") +
+               ggplot2::geom_vline(xintercept = 0, color = "darkgray") +
+               ggplot2::geom_point(ggplot2::aes(color = color),
+                                   position = shapviz:::position_bee(width = 0.4, adjust = 1.0),
+                                   size = 0.01,
+                                   alpha = 0.2) +
+               ggplot2::scale_colour_gradientn(colours = c("blue", "red"),
+                                               breaks = c(0, 1),
+                                               labels = c("low", "high")) +
+               ggplot2::ggtitle('B') +
+               ggplot2::scale_x_continuous(limits = ~ ifelse(max(abs(.x)) > 0.13, 1.3, 0.13) *  c(-1, 1),
+                                           breaks = my_x_breaks) +
+               ggplot2::labs(x = "Covariate's impact\nto CAD", y = ggplot2::element_blank(), color = "Covariate\nvalue") +
+               ggplot2::theme(strip.background = ggplot2::element_blank() ,
+                              panel.background = ggplot2::element_blank(),
+                              plot.margin = ggplot2::margin(0, 0, 0, 0, "mm"),
+                              strip.text.x = ggplot2::element_blank(),
+                              axis.text.y = ggplot2::element_blank(),
+                              panel.spacing = ggplot2::unit(2, "mm")) } %>%
+  grob_resize_panels(., heights = panel_heights, widths = 30) 
+```
+
+```{r}
+mysave(panel_b, name = "xgboost_beeswarm", width = 15, height = 10)
+```
+
+## Combining panels A, B and D
+
+```{r}
+gridExtra::arrangeGrob(panel_gain, panel_b, panel_harrell,
+                       layout_matrix = rbind(c(1, 2), c(3, 3)),
+                       widths = ggplot2::unit(c(90, 80), c("mm", "mm")),
+                       heights = ggplot2::unit(c(120, 30), c("mm", "mm"))) %>%
+  mysave(name = "xgboost", width = 7.5, height = 6.5)
+```
+
+
+
+## Partial dependecy plot
+
+### Main features
+
+```{r}
+c_pdp_features <- c("BL_AGE", "SYSTM") %union%
+  stringr::str_subset(c_importance_order, "GUT_|Phylum_|Class_|Order_|Family_|Genus_|Species_|NMR_")
+
+c_pdp_features
+c_importance_order <- "NMR_XL_VLDL_FC_pcnt"
+```
+
+### Data
+
+```{r, eval = FALSE, echo = FALSE}
+plot_data <- readRDS("rds/plot_data-20240326_160947.rds")
+```
+
+
+```{r}
+plot_data <- nested_xgboost_cox_cv_pdp(results, c_pdp_features)
+mysave(plot_data)
+```
+
+### Main plot
+
+```{r}
+factor_conversion <- rlang::expr(ifelse(stringr::str_detect(Feature, "GUT_|Phylum_|Class_|Order_|Family_|Genus_|Species_"), glue::glue("*{Desc}*"), as.character(Desc)))
+```
+
+```{r}
+factor_order <- c("Age at baseline", "Systolic blood pressure") %union%
+  { df_importance_sum %>% dplyr::pull(Desc) %>% unique %>% as.character %>% sort } %>%
+  unique
+```
+
+```{r}
+df_prevalence <- tses_gg2_MGS_FR02_nmr %>%
+  purrr::map_df(~mia::getPrevalence(.x, detection = 0.1/100, as_relative = TRUE), .id = "rank") %>% 
+  tidyr::gather(Feature, prevalence, -rank) %>%
+  dplyr::mutate(Feature = stringr::str_replace(Feature, "Species:", "")) %>% 
+  dplyr::mutate(Feature = glue::glue("{rank}_{Feature}")) %>% 
+  tidyr::drop_na() %>% 
+  dplyr::mutate(Feature = stringr::str_replace_all(Feature, c(" " = "_", ".*:" = ""))) %>%
+  dplyr::left_join(df_importance_sum, by = dplyr::join_by(Feature)) %>%
+  dplyr::mutate(Prevalence = glue::glue("Prevalence {sprintf('%.1f', prevalence*100)}%")) %>%
+  my_df_factor_recode(Desc, factor_conversion) %>%
+  dplyr::filter(Feature %in% c_importance_order)
+```
+
+```{r}
+df_prevalence %>% DT::datatable()
+```
+
+### PDP plot
+
+```{r}
+df_pdp <- left_normalize_plot_data(plot_data, abundance, Feature, model) %>%
+  dplyr::left_join(df_importance_sum, by = dplyr::join_by(Feature)) %>%
+  dplyr::filter(Feature %in% c_pdp_features) %>%
+  dplyr::filter(dplyr::n() == max(dplyr::row_number()), .by = c(Feature, model, yhat)) %>% 
+  dplyr::mutate(Desc = forcats::fct_relevel(Desc, factor_order)) %>%
+  my_df_factor_recode(Desc, factor_conversion)
+```
+
+```{r}
+my_x_limits <- function(x) {
+  diff <- max(x) - min(x)
+  min_val <- { dplyr::case_when(min(x) < 10 & diff > 1 ~ floor(min(x)),
+                                min(x) < 10 & diff < 1 ~ round(min(x)*20, digits = 0)/20,
+                                TRUE ~ round(min(x)/5, digits = 0)*5)}
+
+  max_val <- { dplyr::case_when(max(x) < 6 & diff > 1 ~ max(x),
+                                max(x) < 11 & diff > 1 ~ 10,
+                                max(x) < 16 & diff > 1 ~ 15,
+                                max(x) < 10 & diff < 1 ~ round(max(x)*10, digits = 0)/10,
+                                TRUE ~ round(max(x)/5, digits = 0)*5)}
+    
+  c(min_val, max_val)
+}
+```
+
+```{r}
+my_x_breaks <- function(x, limits = FALSE) {
+  diff <- max(x) - min(x)
+  step <- dplyr::case_when(diff < 4 ~ 0.2,
+                           max(x) < 6 ~ 1,
+                           diff > 4 & diff < 40 ~ 5,
+                           diff > 40 & diff < 100 ~ 10,
+                           TRUE ~ 20)
+
+  seq(0, 300, step)
+}
+```
+
+```{r}
+df_data_for_rug <- df_gg2_MGS_FR02_nmr %>%
+  dplyr::filter(GRAVID %in% c(1, NA), BL_USE_RX_J01_1mo %in% c(0, NA), PREVAL_IHD == 0) %>%
+  dplyr::select(one_of(c_pdp_features)) 
+```
+
+```{r}
+df_rug <- df_pdp %>%
+  dplyr::select(Feature, Desc) %>%
+  unique %>%
+  dplyr::left_join(df_prevalence %>% dplyr::select(Feature, prevalence), by = dplyr::join_by(Feature)) %>%
+  dplyr::mutate(splits = dplyr::case_when(is.na(prevalence) ~ 1000,
+                                          prevalence > 0.05 ~ ceiling(1000*prevalence),
+                                          TRUE ~ 50)) %>% 
+  dplyr::mutate(y_norm = purrr::map2(Feature, splits,
+                                  ~stats::quantile(df_data_for_rug %>% dplyr::pull(.x), probs = seq(0,1,1/(.y-1))))) %>%
+  tidyr::unnest(y_norm)
+```
+
+```{r}
+df_rug %>% dplyr::group_by(Feature) %>% dplyr::summarize(n = dplyr::n())
+```
+
+```{r}
+{ df_pdp %>%
+    dplyr::filter(abs(yhat_norm) < 10) %>% 
+    ggplot2::ggplot(ggplot2::aes(x = y_norm, y = yhat_norm)) +
+    ggplot2::facet_wrap(~Desc, scales = "free", ncol = 3) + 
+    ggplot2::geom_line(ggplot2::aes(group = model), alpha = 0.025) +
+    ggplot2::geom_hline(yintercept = 0, color = "red") +
+    ggplot2::geom_smooth(se = FALSE, colour="red", linetype="11", method = "gam", formula = y ~ s(x, bs = "cs")) +
+    ggplot2::scale_color_grey(start = 0, end = 0.9) +
+    ggplot2::geom_rug(data = df_rug,
+                      ggplot2::aes(x = y_norm),
+                      color = "red",
+                      alpha = 0.1,
+                      size = 1,
+                      sides="b",
+                      inherit.aes = FALSE) +
+    ggplot2::guides(color = "none") +
+    ggh4x::facetted_pos_scales(x = list(
+                                 Desc == "Age at baseline" ~ ggplot2::scale_x_continuous(name = NULL,
+                                                                                         breaks = seq(0, 100, 10)),
+                                 Desc == "Systolic blood pressure" ~ ggplot2::scale_x_continuous(name = NULL,
+                                                                                                 breaks = seq(0, 300, 20)),
+                                 TRUE ~ ggplot2::scale_x_continuous(name = NULL,
+                                                                    breaks = seq(-10, 10, 2)))) +
+    ggplot2::scale_y_continuous(name = NULL,
+                                breaks = scales::breaks_pretty(n = 5)) +
+    ggplot2::coord_cartesian(ylim = c(-1, 1)) +
+    ggplot2::geom_text(ggplot2::aes(label = Prevalence), x = -Inf, y = -Inf, hjust = -0.1, vjust = -1, data = df_prevalence) +
+    ggplot2::theme(strip.text.x = ggtext::element_markdown(size = 13, hjust = 0),
+                   panel.border = ggplot2::element_blank(),
+                   plot.margin = ggplot2::margin(1, 5, 1, 1, "mm"), 
+                   axis.line.x = ggplot2::element_line(size = 0.5, linetype = "solid", colour = "black"),
+                   axis.line.y = ggplot2::element_line(size = 0.5, linetype = "solid", colour = "black")) } %>%
+  mysave(name = "xgboost_pdp", width = 8, height = 8, dpi = 900)
+```

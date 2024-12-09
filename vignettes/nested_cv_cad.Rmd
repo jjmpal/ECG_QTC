@@ -1,0 +1,234 @@
+---
+title: "XGboost for the feature importance for each potentially causally linked metabolic measure"
+author: "Joonatan Palmu"
+date: "`r format(Sys.time(), '%d.%m.%Y')`"
+output:
+  rmdformats::robobook:
+    self_contained: true
+    thumbnails: false
+    lightbox: true
+    gallery: true
+---
+
+```{css, echo = FALSE}
+.page-inner, #content{
+  max-width:1920px !important;
+}
+``` 
+
+```{r options, include = FALSE}
+knitr::opts_chunk$set(include = TRUE, echo = TRUE, message = FALSE, results='asis', cache=FALSE, warning=FALSE, collapse = TRUE)
+```
+
+# Devtools
+
+```{r devtools}
+devtools::load_all()
+```
+
+## Command line arguments
+
+```{r}
+args <- list(
+  optparse::make_option("--seed", type = "integer", default = 2024, help = "ModelSeed [default %default]"),
+  optparse::make_option("--index", type = "integer", default = 1, help = "Repeat index [default %default]"),
+  optparse::make_option("--outer", type = "integer", default = 3, help = "Number of outer loops [default %default]"),
+  optparse::make_option("--inner", type = "integer", default = 3, help = "Number of inner loops [default %default]"),
+  optparse::make_option("--design", type = "integer", default = 36, help = "Number of design steps [default %default]"),
+  optparse::make_option("--opt", type = "integer", default = 200, help = "Number of optionsl steps [default %default]"),
+  optparse::make_option("--time", type = "character", help = "Option reference time for save factory [default %default]"),
+  optparse::make_option("--randoms", type = "integer", default = 10, help = "Number of random columns [default %default]"),
+  optparse::make_option("--vars", type = "character", default = "inst/extdata/finrisk_variables.tsv"),
+  optparse::make_option("--match", type = "character", default = "inst/extdata/mendelian_results_match.xlsx"),
+  optparse::make_option("--pairs", type = "character", default = "inst/extdata/mendelian_results_match.tsv")) %>%
+  optparse::OptionParser(option_list = .) %>% 
+  optparse::parse_args()
+```
+
+```{r, error = FALSE}
+stopifnot(exists("df_mr_gut_to_nmr_pairs", envir = rlang::global_env()))
+```
+
+```{r}
+args %>% tibble::enframe(name = "Option", value = "Argument") %>% knitr::kable()
+```
+
+# Function factories
+
+```{r}
+mysave <- { if(!is.null(args$time)) mysavefactory(time = lubridate::ymd_hms(args$time))
+            else mysavefactory() }
+```
+
+# Pairs
+
+```{r}
+df_pairs <- readr::read_tsv(args$pairs) %>%
+  dplyr::filter(!is.na(taxa_finrisk), !is.na(metab_finrisk)) %>%
+  dplyr::select(taxa = taxa_finrisk, metab = metab_finrisk)
+```
+
+# Variable definitions
+
+```{r}
+idcol <- "Barcode"
+```
+
+```{r}
+event_incident <- "INCIDENT_IHD"
+event_prevalent <- "PREVAL_IHD"
+event_agediff <- "IHD_AGEDIFF"
+```
+
+## Derived definitions
+
+```{r}
+vars <- readr::read_tsv(args$vars) %>%
+  dplyr::filter(include) %>%
+  dplyr::pull(id)
+```
+
+```{r}
+metab <- df_pairs %>% dplyr::pull(metab) %>% unique
+taxa <- df_pairs %>% dplyr::pull(taxa) %>% unique
+```
+
+```{r}
+randoms <- stringr::str_c("rnorm_", seq_len(args$randoms))
+random_variable_groups <- randoms %>% split(cut(seq_along(.), breaks = 3, labels = FALSE))
+```
+
+# Dataframe definitions
+
+```{r}
+df_gut <- df_gg2_MGS_FR02_nmr %>%
+  dplyr::select(-dplyr::contains(".col_from_pheno")) %>%
+  dplyr::rename_all(~stringr::str_replace(.x, ".col_from_endpoints", "")) %>% 
+  dplyr::filter(GRAVID %in% c(1, NA), BL_USE_RX_J01_1mo %in% c(0, NA)) %>% 
+  dplyr::filter(!!rlang::sym(event_prevalent) == 0) %>%
+   dplyr::select(dplyr::one_of(metab),
+                dplyr::one_of(taxa),
+                dplyr::one_of(vars),
+                !!rlang::sym(idcol),
+                !!rlang::sym(event_agediff),
+                !!rlang::sym(event_prevalent),
+                !!rlang::sym(event_incident)) %>% 
+  dplyr::select(dplyr::where(~dplyr::n_distinct(.) > 1))
+```
+
+# Interaction list
+
+```{r}
+append_with_random_columns <- function(x, n_low, n_high, ...) {
+  append(x, list(c(...) %union% stringr::str_c("rnorm_", seq(n_low, n_high))))
+}
+```
+
+```{r}
+interaction_list <- df_pairs %>%
+  dplyr::summarize(interactions = list(metab), .by = taxa) %>%
+  dplyr::mutate(random_id = glue::glue("rnorm_{dplyr::row_number()}")) %>% 
+  dplyr::mutate(interactions = purrr::map2(interactions, taxa, ~append(.x, .y))) %>%
+  dplyr::pull(interactions) %>%
+  append(list(taxa %intersect% colnames(df_gut) %union% random_variable_groups[[1]])) %>% 
+  append(list(vars %intersect% colnames(df_gut) %union% random_variable_groups[[2]])) %>% 
+  append(list(metab %intersect% colnames(df_gut) %union% random_variable_groups[[3]]))
+```
+
+```{r}
+interaction_list %>%
+  purrr::map_chr(~stringr::str_c(.x, collapse = ", ")) %>%
+  tibble::as_tibble() %>%
+  DT::datatable(options = list(pageLength = 100))
+```
+
+# Characteristics
+
+```{r}
+df_gut %>% dplyr::select(-dplyr::one_of(idcol)) %>% 
+  mytableone(vars = rlang::set_names(colnames(.)))
+```
+
+```{r, include = FALSE}
+x <- df_gut %>%
+  dplyr::select(-dplyr::one_of(idcol)) %>% 
+  mytableone(vars = rlang::set_names(colnames(.))) %>%
+  as.data.frame() %>%
+  `colnames<-`(c("Feature", "value"))
+
+x %>%
+  tibble::as_tibble() %>% 
+  dplyr::filter(dplyr::row_number() > 1) %>%
+  dplyr::mutate(group = dplyr::case_when(Feature == "  Mean (SD)" ~ dplyr::row_number() - 1,
+                                         Feature == "  Median [Min, Max]" ~ dplyr::row_number() - 2,
+                                         Feature == "  Missing" ~ dplyr::row_number() - 3,
+                                         TRUE ~ dplyr::row_number())) %>%
+  dplyr::mutate(id = x[group+1,1]) %>%
+  dplyr::filter(Feature %in% c("  Mean (SD)", "  Median [Min, Max]", "  Missing")) %>%
+  tidyr::spread(Feature, value) %>%
+  dplyr::select(-group) %>%
+  my_add_names(by = "id") %>%
+  dplyr::select(id, Desc, "  Mean (SD)", "  Median [Min, Max]", "  Missing") %>%
+  readr::write_tsv("char_finrisk.tsv")
+```
+
+
+# Running one nested cv
+
+```{r, message=FALSE}
+results <- nested_xgboost_cox_cv(df_gut,
+                                 index = args$index,
+                                 n_outer_folds = args$outer,
+                                 n_inner_folds = args$inner,
+                                 n_design = args$design,
+                                 n_random = args$randoms,
+                                 opt_steps = args$opt,
+                                 interaction_list = interaction_list,
+                                 event_incident = event_incident,
+                                 event_agediff = event_agediff,
+                                 vars = vars,
+                                 randoms = randoms,
+                                 metab = metab,
+                                 taxa = taxa,
+                                 idcol = idcol,
+                                 seed = args$seed)
+```
+
+
+## Params
+
+```{r}
+results %>%
+  purrr::map_df(~tibble::enframe(.x$params, name = "Parameter", value = "Value"), .id = "model") %>%
+  tidyr::spread(model, Value) %>%
+  DT::datatable()
+```
+
+## Export
+
+```{r}
+save_path <- nested_xgboost_cox_cv_save(x = results, saver = mysave, name = glue::glue("nested_xgboost_cox_cv_{args$index}"))
+save_path
+```
+
+# Results
+
+## Harrell's statistic
+
+```{r}
+results %>% 
+  purrr::map_df(nested_xgboost_cox_cv_harrell, .id = "model") %>%
+  knitr::kable()
+```
+
+## Feature gain
+
+```{r}
+results %>% 
+  purrr::map(~xgboost::xgb.importance(colnames(.x$matrix), .x$model)) %>%
+  dplyr::bind_rows() %>%
+  dplyr::select(Feature, Gain) %>% 
+  dplyr::summarize(Gain = sum(Gain), .by = Feature) %>%
+  DT::datatable(caption = "Feature gain", options = list(order = list(list(2, 'desc')), pageLength = 50))
+```
+
