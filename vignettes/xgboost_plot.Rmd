@@ -1,0 +1,77 @@
+---
+title: "XGBoost result plotter"
+author: "Joonatan Palmu"
+date: "`r format(Sys.time(), '%d.%m.%Y')`"
+editor_options: 
+  chunk_output_type: console
+---
+
+# Init
+
+```{r options, include = FALSE}
+knitr::opts_chunk$set(include = TRUE, echo = TRUE, message = FALSE, results='asis', cache=FALSE, warning=FALSE, collapse = TRUE, error = TRUE)
+```
+
+# Devtools
+
+```{r devtools}
+devtools::load_all(quiet = TRUE)
+```
+
+## Function factories
+
+```{r}
+mysave <- mysavefactory()
+```
+
+## Plot settings
+
+```{r}
+{ ggthemes::theme_tufte(base_family = "sans", base_size = 12) +
+    ggplot2::theme(panel.border = ggplot2::element_rect(colour = "black", fill = NA),
+                   panel.background = ggplot2::element_rect(fill = NA, color = NA),
+                   plot.background = ggplot2::element_rect(fill = NA, color = NA), 
+                   axis.text = ggplot2::element_text(colour = "black", size = 10)) } %>%
+  ggplot2::theme_set()
+```
+
+# Load data
+
+```{r}
+df <- readr::read_tsv("inst/extdata/xgboost.tsv.gz")
+```
+
+```{r}
+facet_labels <- c("Gain_full" = "Full model", "Gain_minimal" = "Minimal model")
+custom_colors <- c("TRUE" = "#000000", "FALSE" = "gray40")
+```
+
+```{r}
+{ df %>%
+    dplyr::select(Feature, Gain_minimal, Gain_full) %>%
+    dplyr::mutate(order = Gain_full) %>% 
+    tidyr::gather(key, value, dplyr::starts_with("Gain")) %>%
+    dplyr::mutate(key = factor(key, levels = c("Gain_minimal", "Gain_full")))  %>%
+    dplyr::mutate(color = stringr::str_detect(Feature, '\\(')) %>% 
+    dplyr::mutate(Feature = gsub("\\(.*?\\)", "", Feature)) %>% 
+    dplyr::mutate(Feature = dplyr::case_when(Feature == "PRS_SCORE" ~ "Polygenic risk score",
+                                             Feature == "ECG_EVENT_AGE" ~ "Age",
+                                             Feature == "I9_HEARTFAIL" ~ "Heart failure",
+                                             Feature == "SEX_IMPUTED" ~ "Sex",
+                                             Feature == "E4_DIABETES" ~ "Diabetes",
+                                             TRUE ~ Feature)) %>% 
+    ggplot2::ggplot(ggplot2::aes(x = forcats::fct_reorder(Feature, order),
+                                 y = value,
+                                 fill = color)) +
+    ggplot2::facet_wrap(~key, labeller = ggplot2::labeller(key = facet_labels), scales = "free_x") +
+    ggplot2::geom_bar(stat = "identity", position = "dodge") +
+    ggplot2::scale_x_discrete(name = NULL) +
+    ggplot2::scale_y_continuous(name = "Feature importance",
+                                expand = c(0, 0),
+                                breaks = seq(0, 1, 0.1)) +
+    ggplot2::scale_fill_manual(guide = "none",
+                               values = custom_colors) +
+    ggplot2::coord_flip() } %>%
+  mysave("bars_xgboost", width = 4, height = 4) 
+```
+
