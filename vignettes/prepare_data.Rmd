@@ -1,0 +1,84 @@
+---
+title: "Process binomial independent data"
+author: "Joonatan Palmu"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{css, echo = FALSE}
+.page-inner, #content{
+  max-width:1920px !important;
+}
+``` 
+
+```{r options, include = FALSE}
+knitr::opts_chunk$set(include = TRUE, echo = TRUE, message = FALSE, results='asis', cache=FALSE, warning=FALSE, collapse = TRUE)
+```
+
+# Devtools
+
+```{r devtools}
+devtools::load_all(quiet = TRUE)
+```
+
+## Command line arguments
+
+```{r}
+args <- list(
+  optparse::make_option("--names", type = "character", default = "data-raw/fgVNR.tsv"),
+  optparse::make_option("--input", type = "character", default = "data-raw/20241125_full_ekg_data_frame_with_prs_and_atc_is_binary.gz")) %>%
+  optparse::OptionParser(option_list = .) %>% 
+  optparse::parse_args()
+```
+
+```{r, error = FALSE}
+stopifnot(file.exists(args$input), file.exists(args$names))
+```
+
+```{r}
+args %>% tibble::enframe(name = "Option", value = "Argument") %>% knitr::kable()
+```
+
+# Read data
+
+## Read sample information
+
+```{r}
+df_sample_raw <- readr::read_tsv(args$input, show_col_types = FALSE)
+```
+
+## Covariate names 
+
+```{r}
+dict_names <- readr::read_tsv(args$names) %>%
+  dplyr::filter(!is.na(Substance), !is.na(ATC)) %>%
+  dplyr::filter(ATC %in% colnames(df_sample_raw)) %>% 
+  dplyr::mutate(Substance = glue::glue("{stringr::str_to_sentence(Substance)} ({ATC})")) %>% 
+  dplyr::select(name = Substance, id = ATC) %>%
+  tibble::deframe()
+```
+
+## Rename and subset original data
+
+```{r}
+vars <- rlang::exprs(QTCorrected, ECG_EVENT_AGE, SEX_IMPUTED, N14_CHRONKIDNEYDIS, I9_CHD, E4_DIABETES, I9_HEARTFAIL, PRS_SCORE)
+```
+
+```{r}
+df_binomial <- df_sample_raw %>%
+  dplyr::select(!!!vars, !!!dict_names) %>%
+  dplyr::filter(!is.na(QTCorrected)) %>%
+  detect_factors() %>%
+  dplyr::select(!!!vars, dplyr::where(~ all(table(.) >= 5)))
+```
+
+```{r}
+usethis::use_data(df_binomial, overwrite = TRUE)
+```
+
+# Characteristics
+
+```{r}
+df_binomial %>% table1::table1(~., data = .)
+```
+

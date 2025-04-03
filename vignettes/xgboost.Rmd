@@ -1,0 +1,126 @@
+---
+title: "Process nested CV results for ECG"
+author: "Joonatan Palmu"
+date: "`r format(Sys.time(), '%d.%m.%Y')`"
+editor_options: 
+  chunk_output_type: console
+---
+
+# Init
+
+```{r options, include = FALSE}
+knitr::opts_chunk$set(include = TRUE, echo = TRUE, message = FALSE, results='asis', cache=FALSE, warning=FALSE, collapse = TRUE, error = TRUE)
+```
+
+# Devtools
+
+```{r devtools}
+devtools::load_all(quiet = TRUE)
+```
+
+## Command line arguments
+
+```{r}
+args <- list(optparse::make_option("--results", default = "binomial_v5_full_[0-9]*.rds")) %>% 
+  optparse::OptionParser(option_list = .) %>% 
+  optparse::parse_args()
+```
+
+```{r}
+args %>% tibble::enframe(name = "Option", value = "Argument") %>% knitr::kable()
+```
+
+# Load previously run nested XGboost models
+
+```{r}
+result_files <- list.files(path = "rds", pattern = args$results, full.names = TRUE) #%>% sample(5)
+```
+
+```{r}
+result_files %>%
+  tibble::as_tibble() %>% 
+  DT::datatable()
+```
+
+```{r Read result files}
+results <- result_files %>% 
+  purrr::map(xgb_load, .progress = TRUE) %>%
+  rlang::set_names(., glue::glue("model_{seq_along(.)}"))
+```
+
+# Results
+
+## Characteristics
+
+```{r}
+df_binomial %>% table1::table1(~., data = .)
+```
+
+## Model performance
+
+### Test model performance
+
+```{r}
+results %>%
+  purrr::flatten() %>%
+  purrr::map_df("scores") %>%
+  dplyr::pull(R2) %>%
+  summary()
+```
+
+```{r}
+results %>%
+  purrr::flatten() %>%
+  purrr::map_df("scores") %>%
+  dplyr::pull(RMSE) %>%
+  summary()
+```
+
+## Feature importance 
+
+```{r}
+df_importance <- results %>% 
+  purrr::flatten() %>% 
+  purrr::map_df(~xgboost::xgb.importance(model = .x$model), .id = "model") %>%
+  dplyr::summarize(Gain = median(Gain), .by = Feature) %>% 
+  dplyr::mutate(Gain = Gain/sum(Gain)) %>%
+  dplyr::arrange(-Gain)
+```
+
+```{r}
+df_importance  %>%
+  DT::datatable()
+```
+
+## Shapley importance
+
+```{r}
+get_importance <- function(obj) {
+  shapviz::shapviz(obj$model, X_pred = obj$train_obj$matrix) %>%
+  shapviz::sv_importance(kind = "no") 
+}
+```
+
+
+```{r}
+df_importance_shap <- results %>%
+  purrr::flatten() %>%
+  purrr::map_df(get_importance) %>%
+  dplyr::summarise_all(mean) %>%
+  tidyr::gather(var, importance)
+```
+
+```{r}
+df_importance_shap %>%
+  dplyr::arrange(-importance) %>%
+  DT::datatable()
+```
+
+## Join importances
+
+```{r}
+dplyr::full_join(df_importance, df_importance_shap, by = dplyr::join_by(Feature == var)) %>%
+  dplyr::mutate(Shapley = importance/sum(importance)) %>%
+  dplyr::select(Feature, Gain, Shapley) %>%
+  DT::datatable()
+```
