@@ -18,7 +18,11 @@ list_packages <- c("xgboost",
                    "Metrics",
                    "table1",
                    "ggpubr",
-                   "ggpmisc")
+                   "ggpmisc",
+                   "ggforce",
+                   "DT",
+                   "FNN",
+                   "SHAPforxgboost")
 
 dir.create("cran/source", showWarning = FALSE, recursive = TRUE)
 all_packages <- miniCRAN::pkgDep(list_packages, repos = "https://cloud.r-project.org")
@@ -33,4 +37,4 @@ if (length(missing_packages) > 0) {
                      repos = "https://cran.r-project.org")
 }
 
-zip::zip("my_cran.zip", files = "cran", recurse = TRUE)
+zip::zip(glue::glue("my_cran_{format(Sys.Date(), '%Y%m%d')}.zip"), files = "cran", recurse = TRUE)
