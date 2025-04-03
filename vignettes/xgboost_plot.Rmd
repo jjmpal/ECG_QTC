@@ -46,32 +46,45 @@ df_xgboost <- readr::read_tsv("inst/extdata/xgboost.tsv.gz") %>%
 ```
 
 ```{r}
-facet_labels <- c("Gain_full" = "Full model", "Gain_minimal" = "Minimal model")
+facet_labels <- c("Gain_full" = "Full model", "Gain_minimal" = "Basic model")
 custom_colors <- c("TRUE" = "#000000", "FALSE" = "gray40")
 ```
 
 ```{r}
-df_lm <- readr::read_tsv("inst/extdata/df_meds.tsv.gz") %>%
+df_lm_meds <- readr::read_tsv("inst/extdata/df_meds.tsv.gz") %>%
   dplyr::filter(term == "med1") %>%
   dplyr::select(model, estimate, qval)
 ```
 
 ```{r}
+df_lm_covs <- readr::read_tsv("inst/extdata/df_meds.tsv.gz") %>%
+  dplyr::filter(term != "med1") %>%
+  dplyr::summarize(estimate = median(estimate), qval = median(qval), .by = "term") %>%
+  dplyr::mutate(term = stringr::str_replace(term, "1$", "")) %>% 
+  dplyr::rename(model = term)
+```
+
+```{r}
+df_lm_covs
+```
+
+
+```{r}
 df <- df_xgboost %>%
   dplyr::select(Feature, Gain_minimal, Gain_full) %>%
-    dplyr::mutate(order = Gain_full) %>%
-    dplyr::left_join(df_lm, by = dplyr::join_by(Feature == model)) %>% 
-    tidyr::gather(key, value, dplyr::starts_with("Gain")) %>%
-    dplyr::mutate(key = factor(key, levels = c("Gain_minimal", "Gain_full")))  %>%
-    dplyr::mutate(color = stringr::str_detect(Feature, '\\(')) %>% 
-    dplyr::mutate(Feature = gsub("\\(.*?\\)", "", Feature)) %>% 
-    dplyr::mutate(Feature = dplyr::case_when(Feature == "PRS_SCORE" ~ "Polygenic risk score",
-                                             Feature == "ECG_EVENT_AGE" ~ "Age",
-                                             Feature == "I9_HEARTFAIL" ~ "Heart failure",
-                                             Feature == "SEX_IMPUTED" ~ "Sex",
-                                             Feature == "E4_DIABETES" ~ "Diabetes",
-                                             TRUE ~ Feature)) %>%
-    dplyr::mutate(star = ifelse(qval < 0.05 & key == "Gain_full", TRUE, FALSE))
+  dplyr::mutate(order = Gain_full) %>%
+  dplyr::left_join(dplyr::bind_rows(df_lm_meds, df_lm_covs), by = dplyr::join_by(Feature == model)) %>%
+  tidyr::gather(key, value, dplyr::starts_with("Gain")) %>%
+  dplyr::mutate(key = factor(key, levels = c("Gain_minimal", "Gain_full")))  %>%
+  dplyr::mutate(color = stringr::str_detect(Feature, '\\(')) %>% 
+  dplyr::mutate(Feature = gsub("\\(.*?\\)", "", Feature)) %>% 
+  dplyr::mutate(Feature = dplyr::case_when(Feature == "PRS_SCORE" ~ "Polygenic risk score",
+                                           Feature == "ECG_EVENT_AGE" ~ "Age",
+                                           Feature == "I9_HEARTFAIL" ~ "Heart failure",
+                                           Feature == "SEX_IMPUTED" ~ "Sex",
+                                           Feature == "E4_DIABETES" ~ "Diabetes",
+                                           TRUE ~ Feature)) %>%
+  dplyr::mutate(star = ifelse(qval < 0.05 & key == "Gain_full", TRUE, FALSE))
 ```
 
 
@@ -100,7 +113,7 @@ p2 <- df %>%
   ggplot2::geom_point(ggplot2::aes(shape = star),
                      size = 1,
                      color = "black") +
-  ggplot2::scale_fill_gradient2(name = "Linear\nregression\nestimates",
+  ggplot2::scale_fill_gradient2(name = NULL,
                                 low = "blue",
                                 high = "red",
                                 mid = "white",
@@ -110,6 +123,7 @@ p2 <- df %>%
                                 limits = c(-10, 10))+
   ggplot2::scale_shape_manual(values = c(127, 8), guide = "none") +
   ggplot2::labs(x = NULL, y = "Linear\nmodels") +
+  ggplot2::guides(fill = ggplot2::guide_colorbar(barwidth = 0.5, barheight = 8)) +
   ggplot2::coord_flip() +
   ggplot2::theme(axis.text.y = ggplot2::element_blank())
 ```
