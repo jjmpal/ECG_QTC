@@ -38,7 +38,11 @@ mysave <- mysavefactory()
 # Load data
 
 ```{r}
-df <- readr::read_tsv("inst/extdata/xgboost.tsv.gz")
+df_xgboost <- readr::read_tsv("inst/extdata/xgboost.tsv.gz") %>%
+  dplyr::filter(Feature != "Norethisterone acetate (G03FB05)") %>%
+  dplyr::mutate(Feature = dplyr::case_when(Feature == "Estradiol hemihydrate (G03FB05)" ~
+                                             "Norethisterone and estrogen (G03FB05)",
+                                           TRUE ~ Feature))
 ```
 
 ```{r}
@@ -47,9 +51,16 @@ custom_colors <- c("TRUE" = "#000000", "FALSE" = "gray40")
 ```
 
 ```{r}
-{ df %>%
-    dplyr::select(Feature, Gain_minimal, Gain_full) %>%
-    dplyr::mutate(order = Gain_full) %>% 
+df_lm <- readr::read_tsv("inst/extdata/df_meds.tsv.gz") %>%
+  dplyr::filter(term == "med1") %>%
+  dplyr::select(model, estimate, qval)
+```
+
+```{r}
+df <- df_xgboost %>%
+  dplyr::select(Feature, Gain_minimal, Gain_full) %>%
+    dplyr::mutate(order = Gain_full) %>%
+    dplyr::left_join(df_lm, by = dplyr::join_by(Feature == model)) %>% 
     tidyr::gather(key, value, dplyr::starts_with("Gain")) %>%
     dplyr::mutate(key = factor(key, levels = c("Gain_minimal", "Gain_full")))  %>%
     dplyr::mutate(color = stringr::str_detect(Feature, '\\(')) %>% 
@@ -59,19 +70,53 @@ custom_colors <- c("TRUE" = "#000000", "FALSE" = "gray40")
                                              Feature == "I9_HEARTFAIL" ~ "Heart failure",
                                              Feature == "SEX_IMPUTED" ~ "Sex",
                                              Feature == "E4_DIABETES" ~ "Diabetes",
-                                             TRUE ~ Feature)) %>% 
-    ggplot2::ggplot(ggplot2::aes(x = forcats::fct_reorder(Feature, order),
-                                 y = value,
-                                 fill = color)) +
-    ggplot2::facet_wrap(~key, labeller = ggplot2::labeller(key = facet_labels), scales = "free_x") +
-    ggplot2::geom_bar(stat = "identity", position = "dodge") +
-    ggplot2::scale_x_discrete(name = NULL) +
-    ggplot2::scale_y_continuous(name = "Feature importance",
-                                expand = c(0, 0),
-                                breaks = seq(0, 1, 0.1)) +
-    ggplot2::scale_fill_manual(guide = "none",
-                               values = custom_colors) +
-    ggplot2::coord_flip() } %>%
-  mysave("bars_xgboost", width = 4, height = 4) 
+                                             TRUE ~ Feature)) %>%
+    dplyr::mutate(star = ifelse(qval < 0.05 & key == "Gain_full", TRUE, FALSE))
+```
+
+
+```{r}
+p1 <- ggplot2::ggplot(df, ggplot2::aes(x = forcats::fct_reorder(Feature, order),
+                                       y = value,
+                                       fill = color)) +
+  ggplot2::facet_wrap(~key, labeller = ggplot2::labeller(key = facet_labels)) +
+  ggplot2::geom_bar(stat = "identity", position = "dodge") +
+  ggplot2::scale_x_discrete(name = NULL) +
+  ggplot2::scale_y_continuous(name = "Feature importance\nin grandient boosting",
+                              expand = c(0, 0),
+                              breaks = seq(0, 1, 0.1)) +
+  ggplot2::scale_fill_manual(guide = "none",
+                             values = custom_colors) +
+  ggplot2::coord_flip() 
+```
+
+```{r}
+p2 <- df %>%
+  dplyr::filter(key == "Gain_full") %>%
+  ggplot2::ggplot(ggplot2::aes(x = forcats::fct_reorder(Feature, order),
+                               y = factor("β"),
+                               fill = estimate)) +
+  ggplot2::geom_tile() +
+  ggplot2::geom_point(ggplot2::aes(shape = star),
+                     size = 1,
+                     color = "black") +
+  ggplot2::scale_fill_gradient2(name = "Linear\nregression\nestimates",
+                                low = "blue",
+                                high = "red",
+                                mid = "white",
+                                na.value = "transparent",
+                                midpoint = 0,
+                                oob = scales::squish,
+                                limits = c(-10, 10))+
+  ggplot2::scale_shape_manual(values = c(127, 8), guide = "none") +
+  ggplot2::labs(x = NULL, y = "Linear\nmodels") +
+  ggplot2::coord_flip() +
+  ggplot2::theme(axis.text.y = ggplot2::element_blank())
+```
+
+```{r}
+library(patchwork)
+{p1 + p2 + plot_layout(ncol = 2, widths = c(9, 0.5)) } %>% 
+  mysave("bars_xgboost", width = 6, height = 4) 
 ```
 
