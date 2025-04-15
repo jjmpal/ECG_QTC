@@ -4,6 +4,8 @@
 #'
 #' @return save function
 #'
+#' @importFrom magrittr %>%
+#'
 #' @export
 mysavefactory <- function(objectdir = "rds", plotdir = "cache", time = Sys.time()) {
   datetime <- format(time, '%Y%m%d_%H%M%S')
