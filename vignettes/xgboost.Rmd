@@ -50,17 +50,11 @@ results <- result_files %>%
 
 # Results
 
-## Characteristics
-
-```{r}
-df_binomial %>% table1::table1(~., data = .)
-```
-
 ## Model performance
 
 ### Test model performance
 
-```{r}
+```{r, results='markup'}
 results %>%
   purrr::flatten() %>%
   purrr::map_df("scores") %>%
@@ -68,7 +62,7 @@ results %>%
   summary()
 ```
 
-```{r}
+```{r, results='markup'}
 results %>%
   purrr::flatten() %>%
   purrr::map_df("scores") %>%

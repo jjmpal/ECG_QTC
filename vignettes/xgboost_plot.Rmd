@@ -38,7 +38,7 @@ mysave <- mysavefactory()
 # Load data
 
 ```{r}
-df_xgboost <- readr::read_tsv("inst/extdata/xgboost.tsv.gz") %>%
+df_xgboost <- readr::read_tsv("inst/extdata/xgboost.tsv") %>%
   dplyr::filter(Feature != "Norethisterone acetate (G03FB05)") %>%
   dplyr::mutate(Feature = dplyr::case_when(Feature == "Estradiol hemihydrate (G03FB05)" ~
                                              "Norethisterone and estrogen (G03FB05)",
@@ -46,18 +46,18 @@ df_xgboost <- readr::read_tsv("inst/extdata/xgboost.tsv.gz") %>%
 ```
 
 ```{r}
-facet_labels <- c("Gain_full" = "Full model", "Gain_minimal" = "Basic model")
+facet_labels <- c("Gain_full" = "Full model gain", "Gain_minimal" = "Basic model gain", "Shapley_full" = "Shapley values")
 custom_colors <- c("TRUE" = "#000000", "FALSE" = "gray40")
 ```
 
 ```{r}
-df_lm_meds <- readr::read_tsv("inst/extdata/df_meds.tsv.gz") %>%
+df_lm_meds <- readr::read_tsv("inst/extdata/df_meds.tsv") %>%
   dplyr::filter(term == "med1") %>%
   dplyr::select(model, estimate, qval)
 ```
 
 ```{r}
-df_lm_covs <- readr::read_tsv("inst/extdata/df_meds.tsv.gz") %>%
+df_lm_covs <- readr::read_tsv("inst/extdata/df_meds.tsv") %>%
   dplyr::filter(term != "med1") %>%
   dplyr::summarize(estimate = median(estimate), qval = median(qval), .by = "term") %>%
   dplyr::mutate(term = stringr::str_replace(term, "1$", "")) %>% 
@@ -65,17 +65,12 @@ df_lm_covs <- readr::read_tsv("inst/extdata/df_meds.tsv.gz") %>%
 ```
 
 ```{r}
-df_lm_covs
-```
-
-
-```{r}
 df <- df_xgboost %>%
-  dplyr::select(Feature, Gain_minimal, Gain_full) %>%
+  dplyr::select(Feature, Gain_minimal, Gain_full, Shapley_full) %>%
   dplyr::mutate(order = Gain_full) %>%
   dplyr::left_join(dplyr::bind_rows(df_lm_meds, df_lm_covs), by = dplyr::join_by(Feature == model)) %>%
-  tidyr::gather(key, value, dplyr::starts_with("Gain")) %>%
-  dplyr::mutate(key = factor(key, levels = c("Gain_minimal", "Gain_full")))  %>%
+  tidyr::gather(key, value, Gain_minimal, Gain_full, Shapley_full) %>%
+  dplyr::mutate(key = factor(key, levels = c("Gain_minimal", "Gain_full", "Shapley_full")))  %>%
   dplyr::mutate(color = stringr::str_detect(Feature, '\\(')) %>% 
   dplyr::mutate(Feature = gsub("\\(.*?\\)", "", Feature)) %>% 
   dplyr::mutate(Feature = dplyr::case_when(Feature == "PRS_SCORE" ~ "Polygenic risk score",
@@ -84,9 +79,8 @@ df <- df_xgboost %>%
                                            Feature == "SEX_IMPUTED" ~ "Sex",
                                            Feature == "E4_DIABETES" ~ "Diabetes",
                                            TRUE ~ Feature)) %>%
-  dplyr::mutate(star = ifelse(qval < 0.05 & key == "Gain_full", TRUE, FALSE))
+                                           dplyr::mutate(star = ifelse(qval < 0.05 & key == "Gain_full", TRUE, FALSE))
 ```
-
 
 ```{r}
 p1 <- ggplot2::ggplot(df, ggplot2::aes(x = forcats::fct_reorder(Feature, order),
@@ -95,7 +89,7 @@ p1 <- ggplot2::ggplot(df, ggplot2::aes(x = forcats::fct_reorder(Feature, order),
   ggplot2::facet_wrap(~key, labeller = ggplot2::labeller(key = facet_labels)) +
   ggplot2::geom_bar(stat = "identity", position = "dodge") +
   ggplot2::scale_x_discrete(name = NULL) +
-  ggplot2::scale_y_continuous(name = "Feature importance\nin grandient boosting",
+  ggplot2::scale_y_continuous(name = "Feature importance in grandient boosting",
                               expand = c(0, 0),
                               breaks = seq(0, 1, 0.1)) +
   ggplot2::scale_fill_manual(guide = "none",
@@ -122,7 +116,7 @@ p2 <- df %>%
                                 oob = scales::squish,
                                 limits = c(-10, 10))+
   ggplot2::scale_shape_manual(values = c(127, 8), guide = "none") +
-  ggplot2::labs(x = NULL, y = "Linear\nmodels") +
+  ggplot2::labs(x = NULL, y = NULL) +
   ggplot2::guides(fill = ggplot2::guide_colorbar(barwidth = 0.5, barheight = 8)) +
   ggplot2::coord_flip() +
   ggplot2::theme(axis.text.y = ggplot2::element_blank())
@@ -130,7 +124,7 @@ p2 <- df %>%
 
 ```{r}
 library(patchwork)
-{p1 + p2 + plot_layout(ncol = 2, widths = c(9, 0.5)) } %>% 
-  mysave("bars_xgboost", width = 6, height = 4) 
+{p1 + p2 + plot_layout(ncol = 2, widths = c(20, 1)) } %>% 
+  mysave("bars_xgboost", width = 7, height = 4) 
 ```
 

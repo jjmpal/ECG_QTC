@@ -53,6 +53,7 @@ df_sample_raw <- readr::read_tsv(args$input, show_col_types = FALSE)
 dict_names <- readr::read_tsv(args$names) %>%
   dplyr::filter(!is.na(Substance), !is.na(ATC)) %>%
   dplyr::filter(ATC %in% colnames(df_sample_raw)) %>% 
+  dplyr::distinct(ATC, .keep_all = TRUE) %>% 
   dplyr::mutate(Substance = glue::glue("{stringr::str_to_sentence(Substance)} ({ATC})")) %>% 
   dplyr::select(name = Substance, id = ATC) %>%
   tibble::deframe()

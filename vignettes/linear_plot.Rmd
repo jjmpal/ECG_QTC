@@ -35,70 +35,79 @@ mysave <- mysavefactory()
   ggplot2::theme_set()
 ```
 
-# Results
-
-## PRS score
+## Read pgs data
 
 ```{r}
-df_lm <- stats::lm(QTCorrected ~ PRS_SCORE + ECG_EVENT_AGE + SEX_IMPUTED + N14_CHRONKIDNEYDIS + I9_CHD +E4_DIABETES + I9_HEARTFAIL,
-          data = df_binomial) %>%
-  broom::tidy(conf.int = TRUE)
+df_pgs <- readr::read_tsv("df_pgs.tsv")
 ```
 
 ```{r}
-df_lm %>% DT::datatable()
-```
-
-```{r}
-{ df_lm %>%
+df_plot <- df_pgs %>%
   dplyr::filter(term != "(Intercept)") %>%
+  dplyr::mutate(estimate = ifelse(term == "ECG_EVENT_AGE", 10*estimate, estimate)) %>% 
+  dplyr::mutate(conf.low = ifelse(term == "ECG_EVENT_AGE", 10*conf.low, conf.low)) %>% 
+  dplyr::mutate(conf.high = ifelse(term == "ECG_EVENT_AGE", 10*conf.high, conf.high)) %>% 
   dplyr::mutate(term = dplyr::case_when(term == "SEX_IMPUTED1" ~ "Sex",
                                         term == "PRS_SCORE" ~ "Polygenic risk score",
                                         term == "N14_CHRONKIDNEYDIS1" ~ "Chronic kidney disease",
                                         term == "I9_HEARTFAIL1" ~ "Heart failure",
                                         term == "I9_CHD1" ~ "Coronary heart disease",
-                                        term == "ECG_EVENT_AGE" ~ "Age",
+                                        term == "ECG_EVENT_AGE" ~ "Per 10 years of age",
                                         term == "E4_DIABETES1" ~ "Diabetes",
                                         TRUE ~ term)) %>%
   dplyr::mutate(star = glue::glue("{ifelse(p.value < 0.001, 'P<0.001', sprintf('P=%.3f', p.value))}")) %>%
-  ggplot2::ggplot(ggplot2::aes(x = forcats::fct_rev(term), y = estimate, ymin = conf.low, ymax = conf.high)) +
-  ggplot2::geom_pointrange() +
-  ggplot2::geom_text(ggplot2::aes(label = star, y = 28), hjust = 0) + 
+  dplyr::mutate(label = glue::glue("{sprintf('%.1f', estimate)} ({sprintf('%.1f', conf.low)} to {sprintf('%.1f', conf.high)})"))
+```
+
+
+```{r}
+panelA <-ggplot2::ggplot(df_plot, ggplot2::aes(x = forcats::fct_rev(term), y = estimate, ymin = conf.low, ymax = conf.high)) +
+  ggplot2::coord_flip(clip = "off") +
+  ggplot2::geom_pointrange() +    
   ggplot2::geom_hline(yintercept = 0, linetype = "dashed") +
-  ggplot2::coord_flip() +
-  ggplot2::scale_y_continuous(name = NULL,
-                              expand = c(0.01, 0.01),
-                              breaks = seq(-10, 25, 10),
-                              limits = c(-10, 35)) +
-  ggplot2::labs(x = NULL, y = "Coefficient Estimate (95% CI)") } %>%
-  mysave("forest_prs", width = 6, height = 4)
-```
-
-## Distinct medications
-
-```{r}
-meds <- df_binomial %>% colnames %>% stringr::str_subset('\\)$')
+  ggplot2::scale_y_continuous(expand = c(0.01, 0.01),
+                              breaks = seq(-80, 80, 10),
+                              limits = c(-30, 30)) +
+  ggplot2::labs(x = NULL, y = NULL) 
 ```
 
 ```{r}
-lm_partial <- purrr::partial(stats::lm,
-                             formula = QTCorrected ~ med + ECG_EVENT_AGE + SEX_IMPUTED + N14_CHRONKIDNEYDIS + I9_CHD + 
-                               E4_DIABETES + I9_HEARTFAIL + PRS_SCORE) %>%
-  purrr::possibly()
+panelB <- ggplot2::ggplot(df_plot, ggplot2::aes(x = forcats::fct_rev(term))) +
+  ggplot2::coord_flip(clip = "off") +
+  ggplot2::geom_text(ggplot2::aes(label = label, y = "β (95% CI)"), hjust = 0.5) +
+  ggplot2::labs(x = NULL, y = NULL) +
+  ggplot2::theme(axis.text.y = ggplot2::element_blank(),
+                 panel.grid.major = ggplot2::element_blank(),
+                 panel.grid.minor = ggplot2::element_blank(),
+                 panel.border = ggplot2::element_blank(),
+                 panel.grid = ggplot2::element_blank(),
+                 axis.ticks.y = ggplot2::element_blank()) 
+```
+
+```{r}
+panelC <- ggplot2::ggplot(df_plot, ggplot2::aes(x = forcats::fct_rev(term))) +
+  ggplot2::coord_flip(clip = "off") +
+  ggplot2::geom_text(ggplot2::aes(label = star, y = "P"), hjust = 0.5) +
+  ggplot2::labs(y = NULL, x = NULL) +
+  ggplot2::theme(axis.text.y = ggplot2::element_blank(),
+                 panel.grid.major = ggplot2::element_blank(),
+                 panel.grid.minor = ggplot2::element_blank(),
+                 panel.border = ggplot2::element_blank(),
+                 panel.grid = ggplot2::element_blank(),
+                 axis.ticks.y = ggplot2::element_blank()) 
+```
+
+```{r}
+patchwork::wrap_plots(panelA, panelB, panelC, widths = c(2, 2, 1)) %>%
+  mysave("forest_pgs", width = 7, height = 3)
 ```
 
 
-```{r}
-df_meds <- meds %>%
-  setNames(., .) %>%
-  purrr::map(~lm_partial(data = df_binomial %>% dplyr::rename(med = !!.x))) %>%
-  purrr::map_df(~broom::tidy(.x, conf.int = TRUE), .id = "model") %>%
-  dplyr::mutate(qval = p.adjust(p.value, method = "BH"), .by = term)
-```
 
+## Read med models data
 
 ```{r}
-readr::write_tsv(df_meds, "df_meds.tsv")
+df_meds <- readr::read_tsv("df_meds.tsv")
 ```
 
 ```{r}
