@@ -52,14 +52,14 @@ xgb_inner_loop <- function(data,
                                 maximize = FALSE,
                                 print_every_n = 500)
 
-  test_obj <- xgb_model_matrix(data, -train_index, {{outcome}})
+  test_obj <- xgb_model_matrix(data, !train_index, {{outcome}})
 
   test_scores <- xgb_linear_scores(model_obj, test_obj$dmatrix)
 
   list(data = data,
        outcome = rlang::as_name(rlang::ensym(outcome)),
        train_index = train_index,
-       test_index = -train_index,
+       test_index = !train_index,
        train_obj = train_obj,
        test_obj = test_obj,
        params = params,

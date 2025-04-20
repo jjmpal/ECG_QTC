@@ -118,3 +118,40 @@ dplyr::full_join(df_importance, df_importance_shap, by = dplyr::join_by(Feature 
   dplyr::select(Feature, Gain, Shapley) %>%
   DT::datatable()
 ```
+
+# Margial effects
+
+```{r}
+get_marginal_of_binomial_covariate <- function(result, var) {
+  matrix_off <- result$data %>%
+    dplyr::mutate(!!var := factor(0, levels = c(0, 1))) %>%
+    xgb_model_matrix(., result$test_index, QTCorrected) %>% 
+    purrr::pluck("dmatrix")
+  
+  matrix_on <- result$data %>%
+    dplyr::mutate(!!var := factor(1, levels = c(0, 1))) %>%
+    xgb_model_matrix(., result$test_index, OTCorrected) %>%
+    purrr::pluck("dmatrix")
+  
+  value <- mean(predict(result$model, matrix_on) - predict(result$model, matrix_off))
+  tibble::tibble(Feature = var, marginal = value)
+}
+```
+
+```{r}
+c_meds <- df_importance %>%
+  dplyr::filter(dplyr::row_number() < min(which(stringr::str_detect(Feature, "rbinom_")))) %>%
+  dplyr::pull(Feature) %>%
+  stringr::str_subset('\\(')
+```
+
+```{r}
+c_marginal <- purrr::flatten(results) %>%
+  purrr::cross2(c_meds) %>%
+  purrr::map_df(~get_marginal_of_binomial_covariate(.x[[1]], x[[2]]))
+```
+
+```{r}
+dplyr::summarize(marginal = mean(marginal), .by = Feature) %>%
+  DT::datatable()
+```
